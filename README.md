@@ -6,6 +6,12 @@ This extension runs purely client-side using Chrome's `activeTab` permissions, e
 
 ---
 
+## Acknowledgment
+
+This extension is heavily inspired by and adapted from the original [revivalstack/ai-chat-exporter](https://github.com/revivalstack/ai-chat-exporter) Tampermonkey script by RevivalStack. The browser extension preserves and refactors the original DOM matching, selector structures, and Turndown rule logic inside a native Manifest V3 extension wrapper.
+
+---
+
 ## Features
 
 - **Multi-Platform Support**: Works seamlessly on:
@@ -42,9 +48,3 @@ Since this extension is for personal use, you can load it directly into your bro
 2. Click the **AI Chat Exporter** icon in your browser toolbar. The status card will glow indicating the active platform.
 3. Click **Export as Markdown** (or **Export as JSON**). The download will execute and save directly to your default downloads folder.
 4. Access the **Settings** gear to customize the filename template or change the Gemini title prefix.
-
----
-
-## Credits & Inspiration
-
-This extension is inspired by and adapted from the original [revivalstack/ai-chat-exporter](https://github.com/revivalstack/ai-chat-exporter) Tampermonkey script by RevivalStack. We preserved and refactored the original DOM matching, selector structures, and Turndown rule logic to function inside a native Manifest V3 browser extension wrapper.
