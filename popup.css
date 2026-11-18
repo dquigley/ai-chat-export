@@ -352,7 +352,9 @@ details[open] .settings-icon {
   color: var(--text-muted);
 }
 
-.form-group input {
+.form-group input,
+.frontmatter-name-input,
+.frontmatter-value-input {
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid var(--panel-border);
   color: var(--text-main);
@@ -364,7 +366,9 @@ details[open] .settings-icon {
   transition: all 0.2s ease;
 }
 
-.form-group input:focus {
+.form-group input:focus,
+.frontmatter-name-input:focus,
+.frontmatter-value-input:focus {
   border-color: var(--primary-color);
   box-shadow: 0 0 0 2px rgba(124, 77, 255, 0.15);
   background: rgba(0, 0, 0, 0.3);
@@ -383,4 +387,100 @@ details[open] .settings-icon {
   font-family: monospace;
   font-size: 10px;
   color: #d8b4fe;
+}
+
+.settings-section {
+  border-top: 1px solid var(--panel-border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-section-header h2 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.frontmatter-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.frontmatter-row {
+  display: grid;
+  grid-template-columns: 20px 84px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.frontmatter-row.custom {
+  grid-template-columns: 20px 1fr 1fr 24px;
+}
+
+.frontmatter-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--primary-color);
+}
+
+.frontmatter-label {
+  min-width: 0;
+}
+
+.frontmatter-label strong {
+  display: block;
+  font-size: 11px;
+  color: var(--text-main);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.frontmatter-label span {
+  display: block;
+  font-size: 9px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.frontmatter-name-input,
+.frontmatter-value-input {
+  min-width: 0;
+}
+
+.frontmatter-remove-btn {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.frontmatter-remove-btn:hover {
+  color: var(--text-main);
+  border-color: var(--text-muted);
 }

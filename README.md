@@ -8,6 +8,12 @@ This extension runs purely client-side using Chrome's `activeTab` permissions, e
 
 ---
 
+## Export privacy
+
+The toolbar enables export on the listed HTTPS origins. If the conversation URL changes during extraction, the export stops. Settings stay in extension-local storage. The downloaded file contains the conversation and, by default, its source path. The exporter omits query parameters and fragments from that source field. Links inside messages can still contain their own parameters.
+
+In Markdown, images appear as links so opening a transcript does not automatically load those images. The exporter keeps HTTP and HTTPS destinations, preserves other link labels as text, and quotes literal markup and YAML string values. JSON keeps user messages as plain text and assistant messages as formatted Markdown.
+
 ## Acknowledgment
 
 This extension is heavily inspired by and adapted from the original [revivalstack/ai-chat-exporter](https://github.com/revivalstack/ai-chat-exporter) Tampermonkey script by RevivalStack. The browser extension preserves and refactors the original DOM matching, selector structures, and Turndown rule logic inside a native Manifest V3 extension wrapper.
@@ -19,7 +25,7 @@ This extension is heavily inspired by and adapted from the original [revivalstac
 - **Multi-Platform Support**: Works seamlessly on:
   - **ChatGPT** (`chatgpt.com`, `chat.openai.com`)
   - **Claude** (`claude.ai`)
-  - **Microsoft Copilot** (`www.copilot.com`, `copilot.microsoft.com`)
+  - **Microsoft Copilot** (`copilot.com`, `www.copilot.com`, `copilot.microsoft.com`)
   - **Google Gemini** (`gemini.google.com`)
   - **Grok** (`grok.com`)
 - **Elegantly Formatted Markdown**: Exports include:
@@ -29,6 +35,7 @@ This extension is heavily inspired by and adapted from the original [revivalstac
 - **JSON Export**: Exports conversations as a structured JSON object.
 - **Local-Only Operation**: Runs in your browser without analytics, tracking scripts, or external export services.
 - **Customizable Filename Formats**: Configure templates in settings using placeholders like `{platform}`, `{title}`, `{timestampLocal}`, `{tags}`, or individual tags (`{tag1}`-`{tag9}`).
+- **Customizable Markdown Frontmatter**: Rename or disable built-in YAML properties, such as changing `author` to `authors` or `url` to `source`, and add custom properties that appear in every Markdown export.
 - **Gemini Title Customization**: Automatically strips title prefixes (like checkmarks `✓`) from Gemini chats for cleaner filenames.
 
 ---
@@ -50,4 +57,9 @@ Since this extension is for personal use, you can load it directly into your bro
 1. Navigate to a chat conversation page on any supported platform (e.g., ChatGPT, Gemini, Claude, Grok, or Copilot).
 2. Click the **AI Chat Exporter** icon in your browser toolbar. The status card will glow indicating the active platform.
 3. Click **Export as Markdown** (or **Export as JSON**). The download will execute and save directly to your default downloads folder.
-4. Access the **Settings** gear to customize the filename template or change the Gemini title prefix.
+4. Access the **Settings** gear to customize the filename template, Markdown frontmatter fields, custom frontmatter properties, or Gemini title prefix.
+
+
+## Security regression checks
+
+Run `node --test tests/security.cjs` with Node.js, `playwright-core` available to Node, and `CHROME_BIN` set to a recent Chrome or Brave executable that supports the DevTools extension action API. The suite opens a temporary browser profile, loads this directory as an unpacked extension, and downloads exports from intercepted fixture pages.

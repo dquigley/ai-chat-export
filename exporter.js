@@ -1,68 +1,58 @@
 /* exporter.js */
 
-(function () {
+window.aiChatExporterRun = async function (
+  format, filenameFormat, titlePrefix, frontmatterConfig, platform, expectedUrl
+) {
   "use strict";
 
+  const assertSameConversation = () => {
+    if (window.location.href !== expectedUrl) {
+      throw new Error("The conversation changed during export. Reopen the popup and try again.");
+    }
+  };
   const EXPORTER_VERSION = "3.1.0";
 
   // --- Hostname-Specific Selectors & Identifiers ---
   const CHATGPT = "chatgpt";
-  const CHATGPT_HOSTNAMES = ["chat.openai.com", "chatgpt.com"];
   const CHATGPT_TITLE_REPLACE_TEXT = " - ChatGPT";
-  const CHATGPT_ARTICLE_SELECTOR = "section[data-testid^='conversation-turn-']";
-  const CHATGPT_HEADER_SELECTOR = "h4";
   const CHATGPT_USER_MESSAGE_INDICATOR = "you said";
   const CHATGPT_POPUP_DIV_CLASS = "popover";
   const CHATGPT_BUTTON_SPECIFIC_CLASS = "text-sm";
 
   const GEMINI = "gemini";
-  const GEMINI_HOSTNAMES = ["gemini.google.com"];
   const GEMINI_TITLE_REPLACE_TEXT = "Gemini - ";
   const GEMINI_MESSAGE_ITEM_SELECTOR = "user-query, model-response";
   const GEMINI_SIDEBAR_ACTIVE_CHAT_SELECTOR = 'a[data-test-id="conversation"].selected .conversation-title';
   const GEMINI_TOPBAR_ACTIVE_CHAT_SELECTOR = "conversation-actions .conversation-title";
 
   const CLAUDE = "claude";
-  const CLAUDE_HOSTNAMES = ["claude.ai"];
   const CLAUDE_MESSAGE_SELECTOR = ".font-claude-response:not(#markdown-artifact), [data-testid='user-message']";
   const CLAUDE_USER_MESSAGE_SELECTOR = '[data-testid="user-message"]';
   const CLAUDE_THINKING_BLOCK_CLASS = "transition-all";
   const CLAUDE_ARTIFACT_BLOCK_CELL = ".artifact-block-cell";
 
   const COPILOT = "copilot";
-  const COPILOT_HOSTNAMES = ["www.copilot.com", "copilot.microsoft.com", "copilot.com"];
   const COPILOT_MESSAGE_SELECTOR = ".group\\/user-message, .group\\/ai-message";
   const COPILOT_USER_MESSAGE_SELECTOR = ".group\\/user-message";
 
   const GROK = "grok";
-  const GROK_HOSTNAMES = ["grok.com"];
   const GROK_MESSAGE_SELECTOR = "div[id^='response-']";
   const GROK_CONTENT_SELECTOR = ".response-content-markdown";
   const GROK_USER_INDICATOR = ".items-end";
 
-  const HOSTNAME = window.location.hostname;
-  const CURRENT_PLATFORM = (() => {
-    if (CHATGPT_HOSTNAMES.some((host) => HOSTNAME.includes(host))) {
-      return CHATGPT;
-    }
-    if (CLAUDE_HOSTNAMES.some((host) => HOSTNAME.includes(host))) {
-      return CLAUDE;
-    }
-    if (COPILOT_HOSTNAMES.some((host) => HOSTNAME.includes(host))) {
-      return COPILOT;
-    }
-    if (GEMINI_HOSTNAMES.some((host) => HOSTNAME.includes(host))) {
-      return GEMINI;
-    }
-    if (GROK_HOSTNAMES.some((host) => HOSTNAME.includes(host))) {
-      return GROK;
-    }
-    return "unknown";
-  })();
-
-  // --- Settings Variables (Configured on Run) ---
-  let _filenameFormat = "{platform}_{title}_{timestampLocal}";
-  let _titlePrefix = "✓ ";
+  // --- Default Markdown properties ---
+  const DEFAULT_FRONTMATTER_CONFIG = {
+    fields: [
+      { key: "title", enabled: true, name: "title" },
+      { key: "tags", enabled: true, name: "tags" },
+      { key: "author", enabled: true, name: "author" },
+      { key: "count", enabled: true, name: "count" },
+      { key: "exporter", enabled: true, name: "exporter" },
+      { key: "date", enabled: true, name: "date" },
+      { key: "url", enabled: true, name: "url" },
+    ],
+    customFields: [],
+  };
 
   // --- Markdown Formatting Constants ---
   const DEFAULT_CHAT_TITLE = "chat";
@@ -88,11 +78,11 @@
     }
 
     turndown(rootNode) {
-      let output = "";
-
       const process = (node) => {
-        if (node.nodeType === Node.TEXT_NODE) return node.nodeValue;
+        if (node.nodeType === Node.TEXT_NODE) return Utils.escapeMd(node.nodeValue);
         if (node.nodeType !== Node.ELEMENT_NODE) return "";
+
+        if (["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT"].includes(node.nodeName)) return "";
 
         const rule = this.rules.find(
           (r) =>
@@ -111,14 +101,7 @@
         return content;
       };
 
-      let parsedRootNode = rootNode;
-      if (typeof rootNode === "string") {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(rootNode, "text/html");
-        parsedRootNode = doc.body || doc.documentElement;
-      }
-
-      output = Array.from(parsedRootNode.childNodes)
+      const output = Array.from(rootNode.childNodes)
         .map((n) => process(n))
         .join("");
       return output.trim().replace(/\n{3,}/g, "\n\n");
@@ -162,7 +145,140 @@
     },
 
     escapeMd(text) {
-      return text.replace(/[|\\`*_{}\[\]()#+\-!>]/g, "\\$&");
+      return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/[|\\`*_{}\[\]()#!~$]/g, "\\$&");
+    },
+
+    markdownLink(label, rawUrl) {
+      if (!rawUrl?.trim()) return label;
+      try {
+        const url = new URL(rawUrl, document.baseURI);
+        if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) return label;
+        const href = url.href.replace(/&/g, "&amp;").replace(/[<>`\\\s]/g, encodeURIComponent);
+        return `[${label}](<${href}>)`;
+      } catch {
+        return label;
+      }
+    },
+
+    codeDelimiter(text, minimum) {
+      let length = minimum;
+      for (const run of text.matchAll(/`+/g)) length = Math.max(length, run[0].length + 1);
+      return "`".repeat(length);
+    },
+
+    fencedCode(text, language = "") {
+      const fence = Utils.codeDelimiter(text, 3);
+      // Only emit ordinary syntax-highlighting hints. Viewers can run special fence types.
+      const lang = /^(?:bash|c|cpp|csharp|css|csv|diff|go|html|java|javascript|js|json|jsx|kotlin|markdown|md|php|plaintext|python|py|r|ruby|rust|sh|shell|sql|swift|text|toml|ts|tsx|typescript|xml|yaml|yml|zsh)$/i.test(language)
+        ? language.toLowerCase() : "";
+      return `${fence}${lang}\n${text}\n${fence}`;
+    },
+
+    isValidYamlKey(key) {
+      return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(key);
+    },
+
+    formatYamlValue(value) {
+      if (Array.isArray(value)) {
+        return `[${value.map((item) => Utils.formatYamlScalar(item)).join(", ")}]`;
+      }
+      if (typeof value === "number" || typeof value === "boolean") {
+        return String(value);
+      }
+      return Utils.formatYamlScalar(value);
+    },
+
+    formatYamlScalar(value) {
+      if (typeof value === "number" || typeof value === "boolean") {
+        return String(value);
+      }
+
+      return JSON.stringify(String(value ?? "")).replace(/[\u007f-\u009f\u2028\u2029\ufeff\ufffe\uffff]/g,
+        (char) => "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0"));
+    },
+
+    normalizeFrontmatterConfig(config) {
+      const rawFields = Array.isArray(config && config.fields)
+        ? config.fields
+        : DEFAULT_FRONTMATTER_CONFIG.fields;
+      const rawCustomFields = Array.isArray(config && config.customFields)
+        ? config.customFields
+        : [];
+
+      return {
+        fields: DEFAULT_FRONTMATTER_CONFIG.fields.map((defaultField) => {
+          const rawField = rawFields.find((field) => field && field.key === defaultField.key);
+          return {
+            key: defaultField.key,
+            enabled: rawField && typeof rawField.enabled === "boolean"
+              ? rawField.enabled
+              : defaultField.enabled,
+            name: rawField && typeof rawField.name === "string" && rawField.name.trim()
+              ? rawField.name.trim()
+              : defaultField.name,
+          };
+        }),
+        customFields: rawCustomFields
+          .filter((field) => field && (field.name || field.value))
+          .map((field) => ({
+            enabled: field.enabled !== false,
+            name: typeof field.name === "string" ? field.name.trim() : "",
+            value: typeof field.value === "string" ? field.value : "",
+          })),
+      };
+    },
+
+    replaceFrontmatterPlaceholders(value, chatData, localTime) {
+      const replacements = {
+        "{platform}": chatData.author,
+        "{title}": chatData.title,
+        "{date}": localTime,
+        "{source}": chatData.threadUrl,
+        "{url}": chatData.threadUrl,
+        "{exporter}": EXPORTER_VERSION,
+        "{count}": chatData.messageCount,
+      };
+
+      return value.replace(/\{(?:platform|title|date|source|url|exporter|count)\}/g,
+        (placeholder) => String(replacements[placeholder]));
+    },
+
+    buildYamlFrontmatter(chatData, config) {
+      const localTime = Utils.formatLocalTime(chatData.exportedAt);
+      const frontmatterConfig = Utils.normalizeFrontmatterConfig(config);
+      const builtInValues = {
+        title: chatData.title,
+        tags: chatData.tags,
+        author: chatData.author,
+        count: chatData.messageCount,
+        exporter: EXPORTER_VERSION,
+        date: localTime,
+        url: chatData.threadUrl,
+      };
+      const names = new Set();
+      const lines = [];
+
+      const addField = (name, value) => {
+        if (!name || !Utils.isValidYamlKey(name) || names.has(name)) return;
+
+        names.add(name);
+        const key = /^(?:null|true|false|yes|no|on|off|y|n)$/i.test(name) ? JSON.stringify(name) : name;
+        lines.push(`${key}: ${Utils.formatYamlValue(value)}`);
+      };
+
+      frontmatterConfig.fields.forEach((field) => {
+        if (!field.enabled) return;
+        addField(field.name, builtInValues[field.key]);
+      });
+
+      frontmatterConfig.customFields.forEach((field) => {
+        if (!field.enabled) return;
+        const value = Utils.replaceFrontmatterPlaceholders(field.value, chatData, localTime);
+        addField(field.name, value);
+      });
+
+      return `---\n${lines.join("\n")}\n---\n`;
     },
 
     downloadFile(filename, text, mimeType = "text/plain;charset=utf-8") {
@@ -180,7 +296,7 @@
 
       const replacements = {
         "{exporter}": EXPORTER_VERSION,
-        "{platform}": CURRENT_PLATFORM,
+        "{platform}": platform,
         "{title}": title.slice(0, 70).toLocaleLowerCase(),
         "{timestamp}": new Date().toISOString(),
         "{timestampLocal}": Utils.formatLocalTime(new Date()),
@@ -194,26 +310,20 @@
           : "";
       }
 
-      let formattedFilename = format;
-      for (const placeholder in replacements) {
-        if (replacements.hasOwnProperty(placeholder)) {
-          formattedFilename = formattedFilename
-            .split(placeholder)
-            .join(replacements[placeholder]);
-        }
-      }
-
-      return Utils.slugify(
-        `${formattedFilename.replace(/(_+|-+)$/, "")}.${ext}`,
-        false
-      );
+      const formattedFilename = format.replace(/\{(?:exporter|platform|title|timestampLocal|timestamp|tags|tag[1-9])\}/g,
+        (placeholder) => replacements[placeholder]);
+      const stem = Utils.slugify(formattedFilename.replace(/(_+|-+)$/, ""), false, 120 - ext.length - 1)
+        .replace(/^\.+|\.+$/g, "") || DEFAULT_CHAT_TITLE;
+      const safeStem = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(stem)
+        ? "_" + stem.slice(0, 118 - ext.length) : stem;
+      return `${safeStem}.${ext}`;
     },
 
     parseChatTitleAndTags(rawTitle) {
       const tags = [];
       let cleanedTitle = rawTitle.trim();
 
-      const tagRegex = /(^|\s+)#(\S+)/g;
+      const tagRegex = /(^|\s)#(\S+)/g;
       let match;
 
       while ((match = tagRegex.exec(cleanedTitle)) !== null) {
@@ -223,7 +333,7 @@
         }
       }
 
-      cleanedTitle = cleanedTitle.replace(/(^|\s+)#\S+/g, " ").trim();
+      cleanedTitle = cleanedTitle.replace(/(^|\s)#\S+/g, " ").trim();
       cleanedTitle = cleanedTitle.replace(/\s+/g, " ").trim();
 
       return {
@@ -233,59 +343,211 @@
     },
 
     getCleanUrl() {
-      try {
-        return window.location.origin + window.location.pathname;
-      } catch (e) {
-        return window.location.href;
+      return window.location.origin + window.location.pathname;
+    },
+
+    findScrollContainer(doc) {
+      const main = doc.querySelector("main");
+      if (main) {
+        if (main.scrollHeight > main.clientHeight && window.getComputedStyle(main).overflowY.match(/(auto|scroll)/)) {
+          return main;
+        }
+        const candidates = main.querySelectorAll("div[class*='overflow'], div[style*='overflow'], div");
+        for (const el of candidates) {
+          const style = window.getComputedStyle(el);
+          if (el.scrollHeight > el.clientHeight + 40 && style.overflowY.match(/(auto|scroll)/)) {
+            return el;
+          }
+        }
       }
+      const allCandidates = doc.querySelectorAll("div[class*='overflow-y-auto'], div[class*='overflow-auto']");
+      for (const el of allCandidates) {
+        if (el.scrollHeight > el.clientHeight + 40) return el;
+      }
+      return doc.scrollingElement || doc.documentElement || doc.body;
     },
   };
 
   // --- Core Export Logic ---
+  const snapshotDocument = document.implementation.createHTMLDocument("");
   const ChatExporter = {
-    extractChatGPTChatData(doc) {
-      const articles = [...doc.querySelectorAll(CHATGPT_ARTICLE_SELECTOR)];
-      if (articles.length === 0) return null;
+    async extractChatGPTChatData(doc) {
+      const turnsMap = new Map();
 
-      let title =
-        doc.title.replace(CHATGPT_TITLE_REPLACE_TEXT, "").trim() ||
-        DEFAULT_CHAT_TITLE;
+      function getTopLevelTurnElements() {
+        const root = doc.querySelector("main") || doc;
+        for (const selector of ["[data-testid^='conversation-turn-']", "[data-chatgpt-search-unit-key]",
+          "article[data-turn], article:has([data-message-author-role])",
+          "[data-message-author-role='user'], [data-message-author-role='assistant']"]) {
+          const turns = root.querySelectorAll(selector);
+          if (turns.length) {
+            return [...turns].filter((turn) => !turn.parentElement?.closest(selector));
+          }
+        }
+        return [];
+      }
+
+      function scrapeCurrentView() {
+        assertSameConversation();
+        const turnElements = getTopLevelTurnElements();
+        turnElements.forEach((turnEl) => {
+          const testId = turnEl.getAttribute("data-testid") || "";
+          const turnIndexMatch = testId.match(/conversation-turn-(\d+)/);
+          const unitKey = turnEl.getAttribute("data-chatgpt-search-unit-key") || "";
+          const unitIndexMatch = unitKey.match(/(?:^|-)turn-(\d+):(\d+):(user|assistant)$/);
+          const turnIndex = turnIndexMatch
+            ? parseInt(turnIndexMatch[1], 10)
+            : unitIndexMatch
+              ? parseInt(unitIndexMatch[1], 10) * 1000 + parseInt(unitIndexMatch[2], 10)
+              : null;
+
+          const userMessageEl = turnEl.matches("[data-message-author-role='user']")
+            ? turnEl : turnEl.querySelector("[data-message-author-role='user']");
+          const assistantMessageEl = turnEl.matches("[data-message-author-role='assistant']")
+            ? turnEl : turnEl.querySelector("[data-message-author-role='assistant']");
+          const turnType = turnEl.getAttribute("data-turn");
+          const header = turnEl.querySelector("h4, h5, h6")?.textContent?.trim() || "";
+
+          // Case A: Turn contains BOTH user and assistant elements
+          if (userMessageEl && assistantMessageEl) {
+            const uText = userMessageEl.innerText.trim();
+            if (uText) {
+              const uIndex = turnIndex !== null ? turnIndex * 2 : null;
+              const uKey = uIndex !== null ? `turn-${uIndex}-user` : `user-${uText.slice(0, 80)}`;
+              if (!turnsMap.has(uKey)) {
+                turnsMap.set(uKey, {
+                  order: uIndex !== null ? uIndex : 999999,
+                  author: "user",
+                  contentHtml: snapshotDocument.importNode(userMessageEl, true),
+                  contentText: uText,
+                });
+              }
+            }
+            const aTarget = assistantMessageEl.querySelector(".markdown") || assistantMessageEl;
+            const aText = aTarget.innerText.trim();
+            if (aText) {
+              const aIndex = turnIndex !== null ? turnIndex * 2 + 1 : null;
+              const aKey = aIndex !== null ? `turn-${aIndex}-ai` : `ai-${aText.slice(0, 80)}`;
+              if (!turnsMap.has(aKey)) {
+                turnsMap.set(aKey, {
+                  order: aIndex !== null ? aIndex : 999999,
+                  author: "ai",
+                  contentHtml: snapshotDocument.importNode(aTarget, true),
+                  contentText: aText,
+                });
+              }
+            }
+            return;
+          }
+
+          // Case B: Turn is a single user or assistant message
+          const isUser = Boolean(
+            userMessageEl ||
+            unitIndexMatch?.[3] === "user" ||
+            turnType === "user" ||
+            header.toLowerCase().includes(CHATGPT_USER_MESSAGE_INDICATOR) ||
+            (!assistantMessageEl && turnEl.querySelector(".whitespace-pre-wrap") && !turnEl.querySelector(".markdown"))
+          );
+          const author = isUser ? "user" : "ai";
+
+          let contentTarget = null;
+          if (isUser) {
+            contentTarget = userMessageEl?.querySelector("[data-user-message-bubble], .whitespace-pre-wrap, .text-message")
+              || turnEl.querySelector("[data-user-message-bubble], .whitespace-pre-wrap, .text-message")
+              || userMessageEl || turnEl;
+          } else {
+            contentTarget = assistantMessageEl?.querySelector("[data-markdown-text-style='assistant-message'], .markdown")
+              || turnEl.querySelector("[data-markdown-text-style='assistant-message'], .markdown, [data-message-author-role='assistant']")
+              || assistantMessageEl || turnEl;
+          }
+
+          const contentText = (contentTarget.innerText || contentTarget.textContent || "").trim();
+          if (!contentText) return;
+
+          const dedupeKey = unitKey || (turnIndex !== null ? `turn-${turnIndex}` : `${author}-${contentText.slice(0, 80)}`);
+          if (!turnsMap.has(dedupeKey)) {
+            turnsMap.set(dedupeKey, {
+              order: turnIndex !== null ? turnIndex : 999999,
+              author,
+              contentHtml: snapshotDocument.importNode(contentTarget, true),
+              contentText,
+            });
+          }
+        });
+      }
+
+      // 1. Initial scrape of currently visible turns
+      scrapeCurrentView();
+
+      // 2. Find scroll container to traverse virtualized list
+      const container = Utils.findScrollContainer(doc);
+      if (container) {
+        const isWindow = (container === doc.documentElement || container === doc.body);
+        const getScrollHeight = () => (isWindow ? document.documentElement.scrollHeight : container.scrollHeight);
+        const getClientHeight = () => (isWindow ? window.innerHeight : container.clientHeight);
+        const getScrollTop = () => (isWindow ? window.scrollY : container.scrollTop);
+        const setScroll = (pos) => {
+          if (isWindow) window.scrollTo({ top: pos, behavior: "instant" });
+          else container.scrollTop = pos;
+        };
+
+        const initialScrollTop = getScrollTop();
+
+        if (getScrollHeight() > getClientHeight() + 50) {
+          const reverseScroll = !isWindow && window.getComputedStyle(container).flexDirection === "column-reverse";
+          const topPosition = () => reverseScroll ? getClientHeight() - getScrollHeight() : 0;
+          const bottomPosition = () => reverseScroll ? 0 : getScrollHeight() - getClientHeight();
+          // Scroll to top
+          setScroll(topPosition());
+          await new Promise((r) => setTimeout(r, 180));
+          scrapeCurrentView();
+
+          // Scroll through in increments to trigger rendering of all virtualized DOM batches
+          const step = Math.max(250, Math.floor(getClientHeight() * 0.65));
+          let currentPos = topPosition();
+          let iterations = 0;
+          const maxIterations = 100;
+
+          while (currentPos < bottomPosition() && iterations < maxIterations) {
+            currentPos = Math.min(currentPos + step, bottomPosition());
+            setScroll(currentPos);
+            await new Promise((r) => setTimeout(r, 100));
+            scrapeCurrentView();
+            iterations++;
+          }
+
+          // Scroll to bottom for final turns
+          setScroll(bottomPosition());
+          await new Promise((r) => setTimeout(r, 180));
+          scrapeCurrentView();
+
+          // Restore initial scroll position
+          setScroll(initialScrollTop);
+        }
+      }
+
+      const rawTurns = Array.from(turnsMap.values());
+      if (rawTurns.length === 0) return null;
+
+      // Sort turns strictly by order index
+      rawTurns.sort((a, b) => a.order - b.order);
+
+      let title = doc.title.replace(CHATGPT_TITLE_REPLACE_TEXT, "").trim() || DEFAULT_CHAT_TITLE;
       const messages = [];
       let chatIndex = 1;
 
-      for (const article of articles) {
-        const turnType = article.getAttribute("data-turn");
-        const header =
-          article.querySelector(CHATGPT_HEADER_SELECTOR)?.textContent?.trim() ||
-          "";
-
-        const isUser =
-          turnType === "user" ||
-          header.toLowerCase().includes(CHATGPT_USER_MESSAGE_INDICATOR);
-        const author = isUser ? "user" : "ai";
-
-        const contentTarget = article.querySelector(
-          ".markdown, .whitespace-pre-wrap"
-        );
-        const contentHtml = contentTarget || article;
-        const contentText = contentHtml.innerText.trim();
-
-        if (!contentText) continue;
-
-        const messageId = `${author}-${chatIndex}-${Date.now()}-${Math.random()
-          .toString(36)
-          .substring(2, 9)}`;
-
+      for (const turn of rawTurns) {
+        const messageId = `${turn.author}-${chatIndex}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
         messages.push({
           id: messageId,
-          author: author,
-          contentHtml: contentHtml,
-          contentText: contentText,
+          author: turn.author,
+          contentHtml: turn.contentHtml,
+          contentText: turn.contentText,
           timestamp: new Date(),
           originalIndex: chatIndex,
         });
 
-        if (!isUser) chatIndex++;
+        if (turn.author === "ai") chatIndex++;
       }
 
       const _parsedTitle = Utils.parseChatTitleAndTags(title);
@@ -294,7 +556,7 @@
         _raw_title: title,
         title: _parsedTitle.title,
         tags: _parsedTitle.tags,
-        author: CURRENT_PLATFORM,
+        author: platform,
         messages: messages,
         messageCount: messages.filter((m) => m.author === "user").length,
         exportedAt: new Date(),
@@ -303,7 +565,7 @@
       };
     },
 
-    extractClaudeChatData(doc) {
+    async extractClaudeChatData(doc) {
       const messageItems = [...doc.querySelectorAll(CLAUDE_MESSAGE_SELECTOR)];
       if (messageItems.length === 0) return null;
 
@@ -323,20 +585,20 @@
           messageContentHtml = item;
           messageContentText = item.innerText.trim();
         } else {
-          const claudeResponseContent = document.createElement("div");
+          const claudeResponseContent = snapshotDocument.createElement("div");
           Array.from(item.children).forEach((child) => {
-            const isThinkingBlock = child.className.includes(
+            const isThinkingBlock = child.classList.contains(
               CLAUDE_THINKING_BLOCK_CLASS
             );
             const isArtifactBlock =
-              (child.className.includes("pt-3") &&
-                child.className.includes("pb-3")) ||
+              (child.classList.contains("pt-3") &&
+                child.classList.contains("pb-3")) ||
               child.querySelector(CLAUDE_ARTIFACT_BLOCK_CELL);
 
             if (!isThinkingBlock && !isArtifactBlock) {
               const contentGrid = child.querySelector(".grid-cols-1");
               if (contentGrid) {
-                claudeResponseContent.appendChild(contentGrid.cloneNode(true));
+                claudeResponseContent.appendChild(snapshotDocument.importNode(contentGrid, true));
               }
             }
           });
@@ -368,7 +630,7 @@
         _raw_title: chatTitle,
         title: _parsedTitle.title,
         tags: _parsedTitle.tags,
-        author: CURRENT_PLATFORM,
+        author: platform,
         messages: messages,
         messageCount: messages.filter((m) => m.author === "user").length,
         exportedAt: new Date(),
@@ -377,7 +639,7 @@
       };
     },
 
-    extractCopilotChatData(doc) {
+    async extractCopilotChatData(doc) {
       const messageItems = [...doc.querySelectorAll(COPILOT_MESSAGE_SELECTOR)];
       if (messageItems.length === 0) return null;
 
@@ -422,9 +684,7 @@
         messages.push({
           id: messageId,
           author: author,
-          contentHtml: isUser
-            ? messageContentElem
-            : messageContentElem.cloneNode(true),
+          contentHtml: messageContentElem,
           contentText: messageContentElem.innerText.trim(),
           timestamp: new Date(),
           originalIndex: chatIndex,
@@ -448,7 +708,26 @@
       };
     },
 
-    extractGeminiChatData(doc) {
+    async extractGeminiChatData(doc) {
+      const scroller = doc.querySelector(".conversation-container, infinite-scroller, [data-test-id='virtuoso-scroller'], main") || Utils.findScrollContainer(doc);
+      if (scroller && scroller.scrollHeight > scroller.clientHeight + 50) {
+        let lastCount = doc.querySelectorAll(GEMINI_MESSAGE_ITEM_SELECTOR).length;
+        let retries = 0;
+        for (let i = 0; i < 20; i++) {
+          scroller.scrollTop = 0;
+          await new Promise((r) => setTimeout(r, 180));
+          assertSameConversation();
+          const newCount = doc.querySelectorAll(GEMINI_MESSAGE_ITEM_SELECTOR).length;
+          if (newCount === lastCount) {
+            retries++;
+            if (retries >= 2) break;
+          } else {
+            lastCount = newCount;
+            retries = 0;
+          }
+        }
+      }
+
       const messageItems = [
         ...doc.querySelectorAll(GEMINI_MESSAGE_ITEM_SELECTOR),
       ];
@@ -478,7 +757,7 @@
         title = title.replace(GEMINI_TITLE_REPLACE_TEXT, "").trim();
       }
 
-      const configuredPrefix = _titlePrefix;
+      const configuredPrefix = titlePrefix;
 
       if (configuredPrefix && title.startsWith(configuredPrefix.trim())) {
         const Glen = configuredPrefix.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -551,7 +830,7 @@
         _raw_title: title,
         title: _parsedTitle.title,
         tags: _parsedTitle.tags,
-        author: CURRENT_PLATFORM,
+        author: platform,
         messages: messages,
         messageCount: messages.filter((m) => m.author === "user").length,
         exportedAt: new Date(),
@@ -560,7 +839,7 @@
       };
     },
 
-    extractGrokChatData(doc) {
+    async extractGrokChatData(doc) {
       const messageItems = [...doc.querySelectorAll(GROK_MESSAGE_SELECTOR)];
       if (messageItems.length === 0) return null;
 
@@ -585,14 +864,10 @@
           .toString(36)
           .substring(2, 9)}`;
 
-        const clonedContent = isUser
-          ? messageContentElem
-          : messageContentElem.cloneNode(true);
-
         messages.push({
           id: messageId,
           author: author,
-          contentHtml: clonedContent,
+          contentHtml: messageContentElem,
           contentText: textSourceElem.innerText.trim(),
           timestamp: new Date(),
           originalIndex: chatIndex,
@@ -633,7 +908,7 @@
           )}](#chat-${exportChatIndex})\n`;
           content +=
             `## chat-${exportChatIndex}\n\n> ` +
-            msg.contentText.replace(/\n/g, "\n> ") +
+            Utils.escapeMd(msg.contentText).replace(/\r\n?|\n/g, "\n> ") +
             "\n\n";
         } else {
           let markdownContent;
@@ -644,31 +919,20 @@
               `Error converting AI message ${msg.id} to Markdown:`,
               e
             );
-            markdownContent = `[CONVERSION ERROR: Failed to render this section. Original content below]\n\n\`\`\`\n${msg.contentText}\n\`\`\`\n`;
+            markdownContent = "Conversion error. Original text follows.\n\n" + Utils.fencedCode(msg.contentText);
           }
           content += markdownContent + "\n\n" + MARKDOWN_BACK_TO_TOP_LINK;
         }
       });
 
-      const localTime = Utils.formatLocalTime(chatData.exportedAt);
-
-      const yaml = `---\ntitle: "${chatData.title.replaceAll(
-        '"',
-        '\\"'
-      )}"\ntags: [${chatData.tags.join(", ")}]\nauthor: ${
-        chatData.author
-      }\ncount: ${
-        chatData.messageCount
-      }\nexporter: ${EXPORTER_VERSION}\ndate: ${localTime}\nurl: ${
-        chatData.threadUrl
-      }\n---\n`;
+      const yaml = Utils.buildYamlFrontmatter(chatData, frontmatterConfig);
       const tocBlock = `## Table of Contents\n\n${toc.trim()}\n\n`;
 
       const finalOutput =
-        yaml + `\n# ${chatData.title}\n\n` + tocBlock + content.trim() + "\n\n";
+        yaml + `\n# ${Utils.escapeMd(chatData.title)}\n\n` + tocBlock + content.trim() + "\n\n";
 
       const fileName = Utils.formatFileName(
-        _filenameFormat,
+        filenameFormat,
         chatData.title,
         chatData.tags,
         "md"
@@ -689,7 +953,7 @@
               `Error converting AI message ${msg.id} to Markdown:`,
               e
             );
-            markdownContent = `[CONVERSION ERROR: Failed to render this section.]: ${msg.contentText}`;
+            markdownContent = `[CONVERSION ERROR: Failed to render this section.]: ${Utils.escapeMd(msg.contentText)}`;
           }
           return markdownContent;
         }
@@ -710,7 +974,7 @@
       };
 
       const fileName = Utils.formatFileName(
-        _filenameFormat,
+        filenameFormat,
         chatData.title,
         chatData.tags,
         "json"
@@ -723,7 +987,7 @@
     },
 
     setupTurndownRules(turndownServiceInstance) {
-      if (CURRENT_PLATFORM === CHATGPT) {
+      if (platform === CHATGPT) {
         turndownServiceInstance.addRule("chatgptRemoveReactions", {
           filter: (node) =>
             node.nodeName === "DIV" &&
@@ -741,7 +1005,7 @@
         });
       }
 
-      if (CURRENT_PLATFORM === COPILOT) {
+      if (platform === COPILOT) {
         turndownServiceInstance.addRule("copilotRemoveReactions", {
           filter: (node) =>
             node.matches('[data-testid="message-item-reactions"]'),
@@ -771,7 +1035,7 @@
 
             const codeText = codeNode.textContent || "";
 
-            return "\n\n```" + language + "\n" + codeText + "\n```\n\n";
+            return "\n\n" + Utils.fencedCode(codeText, language) + "\n\n";
           },
         });
 
@@ -790,7 +1054,7 @@
               ? lastSpan.textContent.trim()
               : node.getAttribute("href");
 
-            return `[${linkText}](${node.getAttribute("href")}) `;
+            return Utils.markdownLink(Utils.escapeMd(linkText || ""), node.getAttribute("href")) + " ";
           },
         });
       }
@@ -849,7 +1113,7 @@
         }.bind(turndownServiceInstance),
       });
 
-      if (CURRENT_PLATFORM === CLAUDE) {
+      if (platform === CLAUDE) {
         turndownServiceInstance.addRule("claudeCodeBlock", {
           filter: function (node) {
             return (
@@ -873,12 +1137,12 @@
 
             const codeText = codeNode.textContent || "";
 
-            return "\n\n```" + language + "\n" + codeText + "\n```\n\n";
+            return "\n\n" + Utils.fencedCode(codeText, language) + "\n\n";
           },
         });
       }
 
-      if (CURRENT_PLATFORM === GROK) {
+      if (platform === GROK) {
         turndownServiceInstance.addRule("grokPreserveNewlines", {
           filter: (node) => {
             return (
@@ -906,13 +1170,10 @@
               : "";
             const lang = rawLang === "text" ? "" : rawLang;
 
-            const existingFence = content.match(/```[\w]*\n([\s\S]*?)\n```/);
-            if (existingFence) {
-              const codeText = existingFence[1].trim();
-              if (codeText) return `\n\`\`\`${lang}\n${codeText}\n\`\`\`\n\n`;
-            }
+            const source = node.querySelector("pre code, pre");
+            if (source) return "\n\n" + Utils.fencedCode(source.textContent, lang) + "\n\n";
 
-            let codeText = content;
+            let codeText = node.textContent;
             if (langSpan) {
               const langLabel = langSpan.textContent.trim();
               if (codeText.startsWith(langLabel)) {
@@ -923,7 +1184,7 @@
             codeText = codeText.trim();
 
             if (!codeText) return "";
-            return `\n\`\`\`${lang}\n${codeText}\n\`\`\`\n\n`;
+            return "\n\n" + Utils.fencedCode(codeText, lang) + "\n\n";
           },
         });
       }
@@ -933,16 +1194,15 @@
         replacement: (content, node) => {
           if (node.parentNode.nodeName === "PRE") return content;
 
-          if (
-            typeof CURRENT_PLATFORM !== "undefined" &&
-            CURRENT_PLATFORM === GROK
-          ) {
+          if (platform === GROK) {
             if (node.closest && node.closest('[data-testid="code-block"]')) {
               return content;
             }
           }
 
-          return `\`${content}\``;
+          const text = node.textContent.replace(/[\r\n]+/g, " ");
+          const fence = Utils.codeDelimiter(text, 1);
+          return `${fence} ${text} ${fence}`;
         },
       });
 
@@ -952,10 +1212,7 @@
           let lang = "";
           let codeText = "";
 
-          if (
-            typeof CURRENT_PLATFORM !== "undefined" &&
-            CURRENT_PLATFORM === GEMINI
-          ) {
+          if (platform === GEMINI) {
             const geminiCodeBlockParent = node.closest(".code-block");
             if (geminiCodeBlockParent) {
               const geminiLanguageSpan = geminiCodeBlockParent.querySelector(
@@ -967,10 +1224,7 @@
             }
           }
 
-          if (
-            typeof CURRENT_PLATFORM !== "undefined" &&
-            CURRENT_PLATFORM === CHATGPT
-          ) {
+          if (platform === CHATGPT) {
             const chatgptLanguageDiv = node.querySelector(
               ".text-token-text-primary, .flex.items-center.text-token-text-secondary, .text-xs.font-sans"
             );
@@ -995,7 +1249,7 @@
             codeText = codeElement.textContent;
           }
 
-          if (!codeText && !codeElement) return content;
+          if (!codeText && !codeElement) codeText = node.textContent;
 
           if (!lang && codeElement && codeElement.className) {
             const match = codeElement.className.match(/language-(\w+)/);
@@ -1003,7 +1257,6 @@
           }
 
           const cleanCode = (codeText || "").trim();
-          const safeLang = (lang || "").toLowerCase();
 
           let prefix = "\n";
           let prevSibling = node.previousElementSibling;
@@ -1014,7 +1267,7 @@
             }
           }
 
-          return `${prefix}\`\`\`${safeLang}\n${cleanCode}\n\`\`\`\n`;
+          return prefix + Utils.fencedCode(cleanCode, lang) + "\n";
         },
       });
 
@@ -1041,7 +1294,7 @@
       turndownServiceInstance.addRule("link", {
         filter: "a",
         replacement: (content, node) =>
-          `[${content}](${node.getAttribute("href")})`,
+          Utils.markdownLink(content, node.getAttribute("href")),
       });
 
       turndownServiceInstance.addRule("strikethrough", {
@@ -1061,7 +1314,7 @@
           const getRowCellsContent = (rowElement) => {
             const cells = Array.from(rowElement.querySelectorAll("th, td"));
             return cells.map((cell) =>
-              cell.textContent.replace(/\s+/g, " ").trim()
+              Utils.escapeMd(cell.textContent.replace(/\s+/g, " ").trim())
             );
           };
 
@@ -1081,36 +1334,13 @@
             return "";
           }
 
-          const isFirstRowAHeader = headerRows.length > 0;
-          const maxCols = Math.max(...allRowsContent.map((row) => row.length));
-
-          const paddedRows = allRowsContent.map((row) => {
-            const paddedRow = [...row];
-            while (paddedRow.length < maxCols) {
-              paddedRow.push("");
-            }
-            return paddedRow;
-          });
-
-          let markdownTable = "";
-
-          if (isFirstRowAHeader) {
-            markdownTable += "| " + paddedRows[0].join(" | ") + " |\n";
-            markdownTable += "|" + Array(maxCols).fill("---").join("|") + "|\n";
-            for (let i = 1; i < paddedRows.length; i++) {
-              markdownTable += "| " + paddedRows[i].join(" | ") + " |\n";
-            }
-          } else {
-            for (let i = 0; i < paddedRows.length; i++) {
-              markdownTable += "| " + paddedRows[i].join(" | ") + " |\n";
-              if (i === 0) {
-                markdownTable +=
-                  "|" + Array(maxCols).fill("---").join("|") + "|\n";
-              }
-            }
-          }
-
-          return markdownTable.trim();
+          const maxCols = allRowsContent.reduce((max, row) => Math.max(max, row.length), 0);
+          // GFM permits short body rows. Only the first row must match the separator.
+          const firstRow = allRowsContent[0];
+          while (firstRow.length < maxCols) firstRow.push("");
+          const rows = allRowsContent.map((row) => "| " + row.join(" | ") + " |");
+          rows.splice(1, 0, "|" + Array(maxCols).fill("---").join("|") + "|");
+          return rows.join("\n");
         },
       });
 
@@ -1133,20 +1363,12 @@
         },
       });
 
-      if (CURRENT_PLATFORM === CHATGPT) {
+      if (platform === CHATGPT) {
         turndownServiceInstance.addRule("popup-div", {
           filter: (node) =>
             node.nodeName === "DIV" &&
             node.classList.contains(CHATGPT_POPUP_DIV_CLASS),
-          replacement: (content) => {
-            const textWithLineBreaks = content
-              .replace(/<br\s*\/?>/gi, "\n")
-              .replace(/<\/(p|div|h[1-6]|ul|ol|li)>/gi, "\n")
-              .replace(/<(?:p|div|h[1-6]|ul|ol|li)[^>]*>/gi, "\n")
-              .replace(/<\/?[^>]+(>|$)/g, "")
-              .replace(/\n+/g, "\n");
-            return "\n```\n" + textWithLineBreaks + "\n```\n";
-          },
+          replacement: (content, node) => "\n\n" + Utils.fencedCode(node.textContent) + "\n\n",
         });
         turndownServiceInstance.addRule("buttonWithSpecificClass", {
           filter: (node) =>
@@ -1157,7 +1379,7 @@
         });
       }
 
-      if (CURRENT_PLATFORM === GEMINI) {
+      if (platform === GEMINI) {
         turndownServiceInstance.addRule("geminiCodeLanguageLabel", {
           filter: (node) =>
             node.nodeName === "SPAN" &&
@@ -1170,9 +1392,9 @@
       turndownServiceInstance.addRule("images", {
         filter: (node) => node.nodeName === "IMG",
         replacement: (content, node) => {
-          const src = node.getAttribute("src") || "";
-          const alt = node.alt || "";
-          return src ? `![${alt}](${src})` : "";
+          const label = Utils.escapeMd(node.alt || "Image");
+          if (node.closest("a")) return Utils.escapeMd(node.alt || "");
+          return Utils.markdownLink(label, node.getAttribute("src"));
         },
       });
 
@@ -1192,58 +1414,52 @@
     },
   };
 
-  // --- External Entry Point called by popup.js ---
-  window.aiChatExporterRun = async function (format, filenameFormat, titlePrefix) {
-    // 1. Update settings passed from the extension popup
-    _filenameFormat = filenameFormat;
-    _titlePrefix = titlePrefix;
-
-    if (CURRENT_PLATFORM === "unknown") {
-      return { success: false, error: "The exporter does not support this hostname." };
+  try {
+    assertSameConversation();
+    // 2. Extract raw chat data based on platform
+    let chatData = null;
+    if (platform === CHATGPT) {
+      chatData = await ChatExporter.extractChatGPTChatData(document);
+    } else if (platform === CLAUDE) {
+      chatData = await ChatExporter.extractClaudeChatData(document);
+    } else if (platform === COPILOT) {
+      chatData = await ChatExporter.extractCopilotChatData(document);
+    } else if (platform === GEMINI) {
+      chatData = await ChatExporter.extractGeminiChatData(document);
+    } else if (platform === GROK) {
+      chatData = await ChatExporter.extractGrokChatData(document);
     }
 
-    try {
-      // 2. Extract raw chat data based on platform
-      let chatData = null;
-      if (CURRENT_PLATFORM === CHATGPT) {
-        chatData = ChatExporter.extractChatGPTChatData(document);
-      } else if (CURRENT_PLATFORM === CLAUDE) {
-        chatData = ChatExporter.extractClaudeChatData(document);
-      } else if (CURRENT_PLATFORM === COPILOT) {
-        chatData = ChatExporter.extractCopilotChatData(document);
-      } else if (CURRENT_PLATFORM === GEMINI) {
-        chatData = ChatExporter.extractGeminiChatData(document);
-      } else if (CURRENT_PLATFORM === GROK) {
-        chatData = ChatExporter.extractGrokChatData(document);
-      }
-
-      if (!chatData || chatData.messages.length === 0) {
-        return {
-          success: false,
-          error: `No chat messages found for ${CURRENT_PLATFORM}. Ensure the page has fully loaded.`,
-        };
-      }
-
-      // 3. Set up TurndownService
-      const turndownServiceInstance = new TurndownService();
-      ChatExporter.setupTurndownRules(turndownServiceInstance);
-
-      // 4. Format and Trigger Download
-      let result = null;
-      if (format === "markdown") {
-        result = ChatExporter.formatToMarkdown(chatData, turndownServiceInstance);
-        Utils.downloadFile(result.fileName, result.output, "text/markdown;charset=utf-8");
-      } else if (format === "json") {
-        result = ChatExporter.formatToJSON(chatData, turndownServiceInstance);
-        Utils.downloadFile(result.fileName, result.output, "application/json;charset=utf-8");
-      } else {
-        return { success: false, error: `Unsupported export format: ${format}` };
-      }
-
-      return { success: true, fileName: result.fileName };
-    } catch (err) {
-      console.error("Extraction error details:", err);
-      return { success: false, error: err.message || String(err) };
+    if (!chatData || chatData.messages.length === 0) {
+      return {
+        success: false,
+        error: `No chat messages found for ${platform}. Ensure the page has fully loaded.`,
+      };
     }
-  };
-})();
+
+    assertSameConversation();
+    // 3. Set up TurndownService
+    const turndownServiceInstance = new TurndownService();
+    ChatExporter.setupTurndownRules(turndownServiceInstance);
+
+    // 4. Format and Trigger Download
+    let result = null;
+    if (format === "markdown") {
+      result = ChatExporter.formatToMarkdown(chatData, turndownServiceInstance);
+      Utils.downloadFile(result.fileName, result.output, "text/markdown;charset=utf-8");
+    } else if (format === "json") {
+      result = ChatExporter.formatToJSON(chatData, turndownServiceInstance);
+      Utils.downloadFile(result.fileName, result.output, "application/json;charset=utf-8");
+    } else {
+      return { success: false, error: `Unsupported export format: ${format}` };
+    }
+
+    return { success: true, fileName: result.fileName };
+  } catch (err) {
+    console.error("Extraction error details:", err);
+    return { success: false, error: err.message || String(err) };
+  }
+};
+
+// executeScript returns the URL of the document where the engine was installed.
+window.location.href;

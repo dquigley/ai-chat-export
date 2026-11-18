@@ -64,10 +64,38 @@
           <input type="text" id="input-title-prefix" placeholder="✓ ">
           <p class="help-text">Prefix to strip from Gemini chat titles (e.g., status marks).</p>
         </div>
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <h2>Markdown Frontmatter</h2>
+            <button id="btn-add-custom-frontmatter" class="btn btn-tertiary" type="button">Add Property</button>
+          </div>
+          <p class="help-text">Rename, include, or skip built-in YAML properties. Custom properties are added to every Markdown export.</p>
+          <div id="frontmatter-fields" class="frontmatter-fields"></div>
+          <div id="custom-frontmatter-fields" class="frontmatter-fields"></div>
+          <p class="help-text">Custom values support <code>{platform}</code>, <code>{title}</code>, <code>{date}</code>, <code>{source}</code>, and <code>{exporter}</code>.</p>
+        </div>
         <button id="btn-reset-settings" class="btn btn-tertiary">Reset to Defaults</button>
       </div>
     </details>
   </div>
+  <template id="frontmatter-row-template">
+    <div class="frontmatter-row">
+      <input class="frontmatter-enabled" type="checkbox">
+      <div class="frontmatter-label">
+        <strong></strong>
+        <span></span>
+      </div>
+      <input class="frontmatter-name-input" type="text">
+    </div>
+  </template>
+  <template id="custom-frontmatter-row-template">
+    <div class="frontmatter-row custom">
+      <input class="frontmatter-enabled" type="checkbox" aria-label="Include custom property">
+      <input class="frontmatter-name-input" type="text" placeholder="property" aria-label="Custom property name">
+      <input class="frontmatter-value-input" type="text" placeholder="value" aria-label="Custom property value">
+      <button class="frontmatter-remove-btn" type="button" aria-label="Remove custom property">×</button>
+    </div>
+  </template>
   <script src="popup.js"></script>
 </body>
 </html>
