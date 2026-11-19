@@ -35,13 +35,28 @@ test("unpacked extension security boundaries", { timeout: 90000 }, async (t) => 
     const { id } = await browser.send("Extensions.loadUnpacked", { path: path.resolve(__dirname, "..") });
     const fixture = await context.newPage();
     let fixtureHtml;
-    await fixture.route("**/*", route => {
-      if (route.request().resourceType() !== "document") return route.abort();
-      return route.fulfill({ contentType: "text/html", body: fixtureHtml });
+    let fixtureUrl;
+    let exportRequests;
+    context.on("request", request => {
+      if (exportRequests && /^https?:/i.test(request.url())) exportRequests.push(request.url());
+    });
+    // Serve only the selected synthetic document. Block all other HTTP and WebSocket traffic.
+    await context.route(/^https?:/i, route => {
+      const request = route.request();
+      if (request.resourceType() === "document" && request.url().split("#")[0] === fixtureUrl) {
+        return route.fulfill({ contentType: "text/html", body: fixtureHtml });
+      }
+      return route.abort();
+    });
+    await context.routeWebSocket(/^wss?:/i, socket => {
+      if (exportRequests) exportRequests.push(socket.url());
+      socket.close();
     });
 
     async function openAction(url, body = "") {
-      fixtureHtml = '<!doctype html><title>Sample {date} #false</title><main>' + body + '</main>';
+      fixtureUrl = url.split("#")[0];
+      const titlePrefix = new URL(url).hostname === "gemini.google.com" ? "GeminiPrefix " : "";
+      fixtureHtml = '<!doctype html><title>' + titlePrefix + 'Sample {date} #false</title><main>' + body + '</main>';
       await fixture.goto(url);
       await fixture.bringToFront();
       const { targetInfos } = await browser.send("Target.getTargets", { filter: [{ type: "tab" }] });
@@ -65,13 +80,71 @@ test("unpacked extension security boundaries", { timeout: 90000 }, async (t) => 
           const row = popup.locator(".frontmatter-row.custom").last();
           await row.locator(".frontmatter-name-input").fill("sample");
           await row.locator(".frontmatter-value-input").fill("{title}\u0085section");
+          await popup.locator("#input-title-prefix").fill("GeminiPrefix ");
+          await popup.locator('[data-key="count"] .frontmatter-enabled').uncheck();
+          await popup.locator("#btn-add-custom-frontmatter").click();
+          const disabledRow = popup.locator(".frontmatter-row.custom").last();
+          await disabledRow.locator(".frontmatter-name-input").fill("disabled_note");
+          await disabledRow.locator(".frontmatter-value-input").fill("private preference");
+          await disabledRow.locator(".frontmatter-enabled").uncheck();
+
+          const expectedPreferences = {
+            filenameFormat: "a".repeat(150),
+            titlePrefix: "GeminiPrefix ",
+            frontmatterFields: ["title", "tags", "author", "count", "exporter", "date", "url"].map(key => ({
+              key, name: key, enabled: key !== "count"
+            })),
+            customFrontmatterFields: [
+              { enabled: true, name: "sample", value: "{title}\u0085section" },
+              { enabled: false, name: "disabled_note", value: "private preference" }
+            ]
+          };
+          await popup.evaluate(() => {
+            // Observe the extension API boundary while still injecting and downloading normally.
+            const executeScript = chrome.scripting.executeScript.bind(chrome.scripting);
+            window.sentArgs = [];
+            chrome.scripting.executeScript = (injection) => {
+              if (injection.args) window.sentArgs.push(injection.args);
+              return executeScript(injection);
+            };
+            window.blockedUrls = [];
+            window.addEventListener("securitypolicyviolation", event => {
+              if (/^(?:https?|wss?):/i.test(event.blockedURI)) window.blockedUrls.push(event.blockedURI);
+            });
+          });
           for (const [button, suffix] of [["md", "md"], ["json", "json"]]) {
+            exportRequests = [];
             const [file] = await Promise.all([
               fixture.waitForEvent("download", {timeout: 4500}),
               popup.locator("#btn-export-" + button).click()
             ]);
             assert.equal(file.suggestedFilename(), "a".repeat(119 - suffix.length) + "." + suffix);
             const contents = await fs.readFile(await file.path(), "utf8");
+            await popup.locator("#feedback-message.success").waitFor();
+            const state = await popup.evaluate(async () => ({
+              injected: window.sentArgs.splice(0),
+              blocked: window.blockedUrls.splice(0),
+              local: await chrome.storage.local.get(null),
+              session: await chrome.storage.session.get(null),
+              sync: await chrome.storage.sync.get(null)
+            }));
+            assert.deepEqual([...exportRequests, ...state.blocked], [], "unexpected network attempt during export");
+            exportRequests = null;
+            assert.deepEqual(state.local, expectedPreferences);
+            assert.deepEqual(state.session, {});
+            assert.deepEqual(state.sync, {});
+
+            const platform = { "copilot.microsoft.com": "copilot", "gemini.google.com": "gemini" }[host] || host.split(".")[0];
+            const expectedRequest = {
+              format: button === "md" ? "markdown" : "json",
+              platform, expectedUrl: url, filenameFormat: expectedPreferences.filenameFormat
+            };
+            if (platform === "gemini") expectedRequest.titlePrefix = expectedPreferences.titlePrefix;
+            if (button === "md") expectedRequest.frontmatterConfig = {
+              fields: expectedPreferences.frontmatterFields.filter(field => field.enabled).map(({ key, name }) => ({ key, name })),
+              customFields: [{ name: "sample", value: "{title}\u0085section" }]
+            };
+            assert.deepEqual(state.injected, [[expectedRequest]]);
             const body = button === "md" ? contents : JSON.parse(contents).messages.find(message => message.author === "ai").content;
             assert.ok(body.includes("Literal &lt;sample&gt; and \\[brackets\\]"));
             assert.ok(body.includes(expectedCode));
@@ -85,11 +158,13 @@ test("unpacked extension security boundaries", { timeout: 90000 }, async (t) => 
             }
             if (button === "md") {
               assert.match(contents, /^sample: "Sample \{date\}\\u0085section"$/m);
+              assert.doesNotMatch(contents, /^(?:count|disabled_note):/m);
               assert.match(contents, /^tags: \["false"\]$/m);
             }
           }
-          await popup.locator("#btn-reset-settings").click();
         } finally {
+          exportRequests = null;
+          await popup.locator("#btn-reset-settings").click();
           await popup.close();
         }
       });

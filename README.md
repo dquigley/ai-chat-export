@@ -10,7 +10,7 @@ This extension runs purely client-side using Chrome's `activeTab` permissions, e
 
 ## Export privacy
 
-The toolbar enables export on the listed HTTPS origins. If the conversation URL changes during extraction, the export stops. Settings stay in extension-local storage. The downloaded file contains the conversation and, by default, its source path. The exporter omits query parameters and fragments from that source field. Links inside messages can still contain their own parameters.
+The toolbar enables export on the listed HTTPS origins. If the conversation URL changes during extraction, the export stops. The popup saves preferences in extension-local storage. Only enabled Markdown properties go into the tab for a Markdown export, and only Gemini exports receive the configured title prefix. The downloaded file contains the conversation and, by default, its source path. The exporter omits query parameters and fragments from that source field. Links inside messages can still contain their own parameters.
 
 In Markdown, images appear as links so opening a transcript does not automatically load those images. The exporter keeps HTTP and HTTPS destinations, preserves other link labels as text, and quotes literal markup and YAML string values. JSON keeps user messages as plain text and assistant messages as formatted Markdown.
 
@@ -62,4 +62,4 @@ Since this extension is for personal use, you can load it directly into your bro
 
 ## Security regression checks
 
-Run `node --test tests/security.cjs` with Node.js, `playwright-core` available to Node, and `CHROME_BIN` set to a recent Chrome or Brave executable that supports the DevTools extension action API. The suite opens a temporary browser profile, loads this directory as an unpacked extension, and downloads exports from intercepted fixture pages.
+Run `node --test tests/security.cjs` with Node.js, `playwright-core` available to Node, and `CHROME_BIN` set to a recent Chrome or Brave executable that supports the DevTools extension action API. The suite opens a temporary browser profile, loads this directory as an unpacked extension, and downloads exports from intercepted fixture pages. For each provider and format, it checks the settings passed into the tab, watches for network attempts during export, and verifies the contents of extension storage.

@@ -177,8 +177,7 @@ function getFrontmatterSettings() {
 
 function validateFrontmatterSettings(settings) {
   const yamlKeyPattern = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-  const enabledFields = [...settings.fields, ...settings.customFields]
-    .filter((field) => field.enabled);
+  const enabledFields = [...settings.fields, ...settings.customFields];
   const names = new Set();
 
   for (const field of enabledFields) {
@@ -295,9 +294,20 @@ function showFeedback(message, type) {
 async function handleExport(exportFormat) {
   if (!activeTab || !detectedPlatform) return;
 
-  const frontmatterSettings = getFrontmatterSettings();
+  const request = {
+    format: exportFormat,
+    filenameFormat: inputFilenameFormat.value || DEFAULT_FILENAME_FORMAT,
+    platform: detectedPlatform,
+    expectedUrl: activeTab.url
+  };
+  if (detectedPlatform === "gemini") request.titlePrefix = inputTitlePrefix.value;
   if (exportFormat === "markdown") {
-    const validationError = validateFrontmatterSettings(frontmatterSettings);
+    const { fields, customFields } = getFrontmatterSettings();
+    request.frontmatterConfig = {
+      fields: fields.filter(field => field.enabled).map(({ key, name }) => ({ key, name })),
+      customFields: customFields.filter(field => field.enabled).map(({ name, value }) => ({ name, value }))
+    };
+    const validationError = validateFrontmatterSettings(request.frontmatterConfig);
     if (validationError) {
       showFeedback(validationError, "error");
       return;
@@ -323,14 +333,11 @@ async function handleExport(exportFormat) {
     }
 
     // Deliver settings only to the document loaded above.
-    const filenameFormat = inputFilenameFormat.value || DEFAULT_FILENAME_FORMAT;
-    const titlePrefix = inputTitlePrefix.value;
-
     const results = await chrome.scripting.executeScript({
       target: { tabId: activeTab.id, documentIds: [loaded.documentId] },
       world: "ISOLATED",
-      func: (...args) => window.aiChatExporterRun(...args),
-      args: [exportFormat, filenameFormat, titlePrefix, frontmatterSettings, detectedPlatform, activeTab.url]
+      func: (request) => window.aiChatExporterRun(request),
+      args: [request]
     });
 
     if (results && results[0] && results[0].result) {

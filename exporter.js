@@ -1,10 +1,9 @@
 /* exporter.js */
 
-window.aiChatExporterRun = async function (
-  format, filenameFormat, titlePrefix, frontmatterConfig, platform, expectedUrl
-) {
+window.aiChatExporterRun = async function (request) {
   "use strict";
 
+  const { format, filenameFormat, titlePrefix, frontmatterConfig, platform, expectedUrl } = request;
   const assertSameConversation = () => {
     if (window.location.href !== expectedUrl) {
       throw new Error("The conversation changed during export. Reopen the popup and try again.");
@@ -39,20 +38,6 @@ window.aiChatExporterRun = async function (
   const GROK_MESSAGE_SELECTOR = "div[id^='response-']";
   const GROK_CONTENT_SELECTOR = ".response-content-markdown";
   const GROK_USER_INDICATOR = ".items-end";
-
-  // --- Default Markdown properties ---
-  const DEFAULT_FRONTMATTER_CONFIG = {
-    fields: [
-      { key: "title", enabled: true, name: "title" },
-      { key: "tags", enabled: true, name: "tags" },
-      { key: "author", enabled: true, name: "author" },
-      { key: "count", enabled: true, name: "count" },
-      { key: "exporter", enabled: true, name: "exporter" },
-      { key: "date", enabled: true, name: "date" },
-      { key: "url", enabled: true, name: "url" },
-    ],
-    customFields: [],
-  };
 
   // --- Markdown Formatting Constants ---
   const DEFAULT_CHAT_TITLE = "chat";
@@ -198,37 +183,6 @@ window.aiChatExporterRun = async function (
         (char) => "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0"));
     },
 
-    normalizeFrontmatterConfig(config) {
-      const rawFields = Array.isArray(config && config.fields)
-        ? config.fields
-        : DEFAULT_FRONTMATTER_CONFIG.fields;
-      const rawCustomFields = Array.isArray(config && config.customFields)
-        ? config.customFields
-        : [];
-
-      return {
-        fields: DEFAULT_FRONTMATTER_CONFIG.fields.map((defaultField) => {
-          const rawField = rawFields.find((field) => field && field.key === defaultField.key);
-          return {
-            key: defaultField.key,
-            enabled: rawField && typeof rawField.enabled === "boolean"
-              ? rawField.enabled
-              : defaultField.enabled,
-            name: rawField && typeof rawField.name === "string" && rawField.name.trim()
-              ? rawField.name.trim()
-              : defaultField.name,
-          };
-        }),
-        customFields: rawCustomFields
-          .filter((field) => field && (field.name || field.value))
-          .map((field) => ({
-            enabled: field.enabled !== false,
-            name: typeof field.name === "string" ? field.name.trim() : "",
-            value: typeof field.value === "string" ? field.value : "",
-          })),
-      };
-    },
-
     replaceFrontmatterPlaceholders(value, chatData, localTime) {
       const replacements = {
         "{platform}": chatData.author,
@@ -246,7 +200,6 @@ window.aiChatExporterRun = async function (
 
     buildYamlFrontmatter(chatData, config) {
       const localTime = Utils.formatLocalTime(chatData.exportedAt);
-      const frontmatterConfig = Utils.normalizeFrontmatterConfig(config);
       const builtInValues = {
         title: chatData.title,
         tags: chatData.tags,
@@ -267,13 +220,12 @@ window.aiChatExporterRun = async function (
         lines.push(`${key}: ${Utils.formatYamlValue(value)}`);
       };
 
-      frontmatterConfig.fields.forEach((field) => {
-        if (!field.enabled) return;
+      config.fields.forEach((field) => {
+        if (!Object.hasOwn(builtInValues, field.key)) return;
         addField(field.name, builtInValues[field.key]);
       });
 
-      frontmatterConfig.customFields.forEach((field) => {
-        if (!field.enabled) return;
+      config.customFields.forEach((field) => {
         const value = Utils.replaceFrontmatterPlaceholders(field.value, chatData, localTime);
         addField(field.name, value);
       });
